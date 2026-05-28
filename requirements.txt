@@ -1,0 +1,43 @@
+# Core trading and exchange libraries
+coinbase-advanced-py==1.8.2
+ccxt==4.4.50
+websockets==13.1
+
+# Async runtime
+uvloop==0.21.0
+
+# Data handling
+polars==1.17.1
+pyarrow==18.1.0
+numpy==2.2.0
+
+# State and persistence
+redis==5.2.1
+
+# Configuration
+pyyaml==6.0.2
+python-dotenv==1.0.1
+
+# Type safety and validation
+pydantic==2.10.4
+
+# Logging
+structlog==24.4.0
+
+# HTTP and networking
+httpx==0.28.1
+aiohttp==3.11.11
+
+# Backtest analysis (used in Phase 8)
+matplotlib==3.10.0
+pandas==2.2.3
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+
+# Development tools
+black==24.10.0
+mypy==1.13.0
+ruff==0.8.4

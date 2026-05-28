@@ -1,0 +1,135 @@
+# Volume-Confirmed Breakout Strategy Parameters
+#
+# This file controls bot behavior without touching code.
+# Edit values here and restart the bot for changes to take effect.
+# Different files can be used for backtest vs paper vs live by passing --config flag.
+
+# ============================================================
+# Trading universe
+# ============================================================
+universe:
+  pairs:
+    - BTC-USD
+    - ETH-USD
+    - SOL-USD
+    - AVAX-USD
+    - LINK-USD
+
+  # Base currency used for position sizing
+  quote_currency: USD
+
+# ============================================================
+# Strategy parameters
+# ============================================================
+strategy:
+  name: volume_breakout
+  version: 1.0
+
+  # Breakout detection
+  # The bot looks for the highest price in the last N one-minute bars
+  # A signal fires when current price exceeds that high
+  breakout_lookback_bars: 30
+
+  # Volume confirmation
+  # Current bar volume must be at least N times the average of the lookback window
+  volume_multiplier_threshold: 2.0
+  volume_lookback_bars: 30   # usually same as breakout lookback
+
+  # Bar resolution for indicators
+  # 60 = one-minute bars, 300 = five-minute bars
+  bar_interval_seconds: 60
+
+# ============================================================
+# Exit logic
+# ============================================================
+exits:
+  # Stop loss distance, expressed as multiple of ATR
+  stop_atr_multiplier: 1.5
+  atr_lookback_bars: 14
+
+  # Trailing stop — moves up as price moves favorably
+  trailing_stop_enabled: true
+  trailing_stop_atr_multiplier: 1.5
+
+  # Time-based exit — disabled per configuration
+  time_exit_enabled: false
+  time_exit_minutes: null
+
+# ============================================================
+# Position sizing
+# ============================================================
+sizing:
+  # Maximum capital at risk per trade, as fraction of total capital
+  # 0.03 means 3% — with $10K capital, max loss per trade is $300
+  risk_per_trade: 0.03
+
+  # Maximum number of positions open simultaneously
+  max_concurrent_positions: 3
+
+  # Minimum position size in USD (skip trades smaller than this)
+  min_position_usd: 25.0
+
+# ============================================================
+# Risk management — circuit breakers
+# ============================================================
+risk:
+  # Daily P&L kill switch
+  # If total daily loss exceeds this fraction of capital, bot stops
+  daily_loss_kill_switch: 0.09  # -9% of capital
+
+  # Consecutive loss pause
+  # If this many trades lose in a row, bot pauses for manual review
+  consecutive_loss_limit: 5
+
+  # Reset behavior
+  # Both circuit breakers require manual restart to clear — they do NOT auto-reset
+  auto_reset_enabled: false
+
+# ============================================================
+# Execution behavior
+# ============================================================
+execution:
+  # Order types
+  # market: fills immediately at current price (more slippage, guaranteed fill)
+  # limit: fills only at specified price or better (less slippage, may not fill)
+  entry_order_type: limit
+  exit_order_type: market   # exits should always fill, even at worse price
+
+  # Limit order configuration (for entries)
+  # Place limit orders this many cents above the best ask for buys
+  # Helps ensure fills while reducing slippage
+  limit_order_offset_bps: 5   # 5 basis points = 0.05%
+
+  # How long to wait for a limit order to fill before canceling
+  limit_order_timeout_seconds: 10
+
+  # Slippage assumption for backtest and paper modes (basis points)
+  # 10 bps = 0.10% — adjust based on observed live performance
+  assumed_slippage_bps: 10
+
+  # Coinbase fee tier assumption (basis points)
+  # Adjust based on your actual volume tier
+  taker_fee_bps: 40  # 0.40%
+  maker_fee_bps: 25  # 0.25%
+
+# ============================================================
+# Operational mode
+# ============================================================
+mode:
+  # Set via BOT_MODE environment variable, not this file
+  # Valid: backtest, paper, live
+  # This section documents allowed values; the actual mode comes from env
+  allowed_modes:
+    - backtest
+    - paper
+    - live
+
+# ============================================================
+# Logging behavior
+# ============================================================
+logging:
+  log_all_signals: true     # Even vetoed ones
+  log_market_data: false    # Tick-level data is high volume, only enable for debugging
+  log_indicators: true
+  log_orders: true
+  log_fills: true

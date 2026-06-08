@@ -116,13 +116,29 @@ class TradingEngine:
         return {p: self._latest_close(p) for p in self._executor.positions}
 
     def _roll_day_if_needed(self, bar_ts: datetime | None) -> None:
-        """At a new calendar day, reset the kill-switch P&L baseline."""
+        """
+        At a new calendar day, reset the daily risk state:
+          - the kill-switch P&L baseline, and
+          - the consecutive-loss counter.
+
+        Resetting consecutive losses daily is what prevents the loss-pause from
+        latching permanently: a bad streak pauses new entries for the rest of
+        that day, then releases at the next day boundary. Without this, once the
+        pause engages no trade can open, so no win can occur to clear it, and the
+        bot halts forever (which corrupted the first 30-day backtest).
+        """
         bar_day = bar_ts.date() if bar_ts is not None else None
         if bar_day != self._current_day:
+            # Only log a reset if we're actually rolling FROM a real prior day
+            if self._current_day is not None and self._consecutive_losses > 0:
+                logger.debug(
+                    f"Day rolled {self._current_day} -> {bar_day}; "
+                    f"consecutive_losses reset from {self._consecutive_losses} to 0"
+                )
             self._current_day = bar_day
             self._realized_at_day_start = self._executor.realized_pnl
-            logger.debug(f"Day rolled to {bar_day}; P&L baseline reset")
-
+            self._consecutive_losses = 0
+            logger.debug(f"Day rolled to {bar_day}; P&L baseline + loss counter reset")
     # --------------------------------------------------------
     # The loop body
     # --------------------------------------------------------

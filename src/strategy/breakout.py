@@ -167,7 +167,7 @@ if __name__ == "__main__":
         python3 -m src.strategy.breakout
     """
     import sys
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     from config.settings import load_strategy_config
     from src.strategy.features import compute_features
@@ -220,7 +220,8 @@ if __name__ == "__main__":
         lows = [c - 0.5 for c in closes[:-1]] + [min(closes[-2] - 0.5, last_close)]
         opens = list(closes)
         vols = [base_vol] * (n - 1) + [last_volume]
-        ts = [datetime(2026, 6, 1, 0, m, tzinfo=timezone.utc) for m in range(n)]
+        base_ts = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+        ts = [base_ts + timedelta(minutes=m) for m in range(n)]
         df = pl.DataFrame({
             "timestamp": ts, "open": opens, "high": highs,
             "low": lows, "close": closes, "volume": vols,

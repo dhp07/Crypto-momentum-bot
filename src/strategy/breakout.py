@@ -292,10 +292,30 @@ if __name__ == "__main__":
         expect("signal existed to check stop", False)
     print()
 
-    # Test 7: breakout + volume BUT downtrend -> no signal (the new filter)
+    # Test 7: breakout + volume BUT downtrend -> no signal (the trend filter)
     print("Test 7: Breakout + volume BUT downtrend (EMA short < long) -> silent")
-    feats = build_frame(last_close=200.0, last_volume=1000.0 * mult * 1.5, rising=False)
-    # sanity: confirm the synthetic frame really is in a downtrend
+    # Build an explicit downtrend: closes descend steadily, and the final bar
+    # ticks up just enough to clear the prior-bar high WITHOUT a big spike that
+    # would drag the short EMA back above the long EMA.
+    n2 = max(lookback, vol_lookback, atr_lookback, ema_long_p) + 20
+    base_ts = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    # Steady descent from high to low over the window
+    closes = [200.0 - i * 0.5 for i in range(n2)]
+    # Final bar: small uptick above the immediately prior close, enough to break
+    # the recent rolling high locally but not enough to flip the EMA trend
+    closes[-1] = closes[-2] + 2.0
+    highs = [c + 0.5 for c in closes]
+    highs[-1] = closes[-1] + 0.5
+    lows = [c - 0.5 for c in closes]
+    opens = list(closes)
+    vols = [1000.0] * (n2 - 1) + [1000.0 * mult * 1.5]
+    ts = [base_ts + timedelta(minutes=m) for m in range(n2)]
+    df_down = pl.DataFrame({
+        "timestamp": ts, "open": opens, "high": highs,
+        "low": lows, "close": closes, "volume": vols,
+    })
+    feats = compute_features(df_down, lookback, vol_lookback, atr_lookback,
+                             ema_short_p, ema_long_p)
     last = feats.tail(1)
     es, el = last["ema_short"][0], last["ema_long"][0]
     expect(f"frame is downtrend (ema_short {es:.3f} < ema_long {el:.3f})", es < el)

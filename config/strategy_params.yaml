@@ -44,10 +44,10 @@ strategy:
   # during a downtrend. These periods are in BARS at the current bar interval.
   ema_short_period: 20
   ema_long_period: 50
-  
+
   # Bar resolution for indicators
   # 60 = one-minute bars, 300 = five-minute bars, 900 = fifteen-minute bars
-  bar_interval_seconds: 900
+  bar_interval_seconds: 3600
 
 # ============================================================
 # Exit logic

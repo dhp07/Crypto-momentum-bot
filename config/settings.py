@@ -61,6 +61,8 @@ class StrategyConfig(BaseModel):
     bar_interval_seconds: int = Field(gt=0)
     ema_short_period: int = Field(gt=0)
     ema_long_period: int = Field(gt=0)
+    rsi_filter_enabled: bool = False
+    macd_filter_enabled: bool = False
 
 
 class ExitsConfig(BaseModel):

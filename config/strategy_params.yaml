@@ -26,7 +26,7 @@ strategy:
   version: 1.0
 
   # Breakout detection
-  # The bot looks for the highest price in the last N one-minute bars
+  # The bot looks for the highest price in the last N bars
   # A signal fires when current price exceeds that high
   breakout_lookback_bars: 30
 
@@ -36,19 +36,20 @@ strategy:
   volume_lookback_bars: 30   # usually same as breakout lookback
 
   # Bar resolution for indicators
-  # 60 = one-minute bars, 300 = five-minute bars
-  bar_interval_seconds: 60
+  # 60 = one-minute, 900 = fifteen-minute, 3600 = one-hour bars
+  bar_interval_seconds: 900
 
   # EMA trend filter — only take long entries when short EMA > long EMA.
-  # Added after the first backtest showed the strategy was buying breakouts
-  # during a downtrend. These periods are in BARS at the current bar interval.
+  # These periods are in BARS at the current bar interval.
   ema_short_period: 20
   ema_long_period: 50
 
-  # Bar resolution for indicators
-  # 60 = one-minute bars, 300 = five-minute bars, 900 = fifteen-minute bars
-  bar_interval_seconds: 3600
-
+  # Optional indicator filters (off by default; the sweep toggles these in memory).
+  # rsi_filter:  when true, blocks entry if RSI > 70 (skip overbought breakouts)
+  # macd_filter: when true, requires MACD line > signal line (momentum confirming)
+  rsi_filter_enabled: false
+  macd_filter_enabled: false
+  
 # ============================================================
 # Exit logic
 # ============================================================

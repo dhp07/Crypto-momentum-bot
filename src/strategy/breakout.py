@@ -57,6 +57,8 @@ class VolumeBreakoutStrategy(Strategy):
             f"stop_atr_multiplier={self._stop_atr_multiplier}, "
             f"ema_short={self._ema_short_period}, ema_long={self._ema_long_period}"
         )
+        self._rsi_filter_enabled = config.strategy.rsi_filter_enabled
+        self._macd_filter_enabled = config.strategy.macd_filter_enabled
 
     def evaluate(
         self,
@@ -83,6 +85,9 @@ class VolumeBreakoutStrategy(Strategy):
         atr = bar["atr"][0]
         ema_short = bar["ema_short"][0]
         ema_long = bar["ema_long"][0]
+        rsi = bar["rsi"][0]
+        macd = bar["macd"][0]
+        macd_signal = bar["macd_signal"][0]
 
         # Minimum-data guard: if any indicator is null (not enough history yet,
         # e.g. a thin pair like AVAX with gaps), do not trade. This is the guard
@@ -109,7 +114,22 @@ class VolumeBreakoutStrategy(Strategy):
 
         if not (broke_out and volume_confirmed and uptrend):
             return None
+# Optional RSI filter: skip overbought breakouts (exhaustion risk)
+        if self._rsi_filter_enabled:
+            if rsi is None:
+                return None
+            if rsi > 70:
+                logger.debug(f"{product_id}: RSI {rsi:.1f} > 70, filtered")
+                return None
 
+        # Optional MACD filter: require momentum confirming (line above signal)
+        if self._macd_filter_enabled:
+            if macd is None or macd_signal is None:
+                return None
+            if not (macd > macd_signal):
+                logger.debug(f"{product_id}: MACD {macd:.4f} <= signal {macd_signal:.4f}, filtered")
+                return None
+            
         # All conditions met — build the signal with its stop
         close_dec = Decimal(str(close))
         atr_dec = Decimal(str(atr))

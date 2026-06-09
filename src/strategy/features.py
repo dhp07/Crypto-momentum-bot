@@ -105,34 +105,42 @@ def add_atr(df: pl.DataFrame, lookback: int, col_name: str = "atr") -> pl.DataFr
     df = df.drop("_tr")
     return df
 
+def add_ema(df: pl.DataFrame, period: int, col_name: str) -> pl.DataFrame:
+    """
+    Add an Exponential Moving Average of the close price.
+
+    EMA weights recent bars more heavily than older ones (unlike a simple
+    average), so it reacts faster to trend changes. Polars has this built in
+    via ewm_mean with span=period, which uses the standard EMA smoothing
+    (alpha = 2 / (period + 1)).
+
+    Used here as a TREND FILTER: when a short-period EMA is above a long-period
+    EMA, the recent trend is up. The strategy only takes long entries in that
+    condition — i.e. it won't buy breakouts during a downtrend.
+
+    Args:
+        df: must contain a 'close' column
+        period: EMA span in bars
+        col_name: name for the output column (e.g. 'ema_short')
+    """
+    return df.with_columns(
+        pl.col("close").ewm_mean(span=period, adjust=False).alias(col_name)
+    )
 
 def compute_features(
     df: pl.DataFrame,
     breakout_lookback: int,
     volume_lookback: int,
     atr_lookback: int,
+    ema_short_period: int = 20,
+    ema_long_period: int = 50,
 ) -> pl.DataFrame:
-    """
-    Add all strategy indicators to a bar DataFrame in one call.
-
-    Args:
-        df: OHLCV DataFrame (must have high, low, close, volume columns)
-        breakout_lookback: bars for the rolling high (e.g. 30)
-        volume_lookback: bars for the average volume (e.g. 30)
-        atr_lookback: bars for ATR (e.g. 14)
-
-    Returns:
-        The input DataFrame with rolling_high, avg_volume, and atr columns added.
-        Early bars (before enough history exists) have nulls in those columns.
-    """
-    required = {"high", "low", "close", "volume"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"DataFrame missing required columns: {missing}")
-
+    """Add all indicator columns the strategy needs."""
     df = add_rolling_high(df, breakout_lookback)
     df = add_avg_volume(df, volume_lookback)
     df = add_atr(df, atr_lookback)
+    df = add_ema(df, ema_short_period, "ema_short")
+    df = add_ema(df, ema_long_period, "ema_long")
     return df
 
 

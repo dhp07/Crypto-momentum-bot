@@ -59,6 +59,8 @@ class StrategyConfig(BaseModel):
     volume_multiplier_threshold: float = Field(gt=0)
     volume_lookback_bars: int = Field(gt=0)
     bar_interval_seconds: int = Field(gt=0)
+    ema_short_period: int = Field(gt=0)
+    ema_long_period: int = Field(gt=0)
 
 
 class ExitsConfig(BaseModel):
@@ -280,6 +282,7 @@ if __name__ == "__main__":
         print("✓ Configuration loaded successfully")
         print(f"  Strategy: {config.strategy.name} v{config.strategy.version}")
         print(f"  Pairs: {', '.join(config.universe.pairs)}")
+        print(f"  EMA filter: short={config.strategy.ema_short_period} long={config.strategy.ema_long_period}")
         print(f"  Risk per trade: {config.sizing.risk_per_trade * 100:.1f}%")
         print(f"  Max concurrent positions: {config.sizing.max_concurrent_positions}")
         print(f"  Daily kill switch: -{config.risk.daily_loss_kill_switch * 100:.1f}%")

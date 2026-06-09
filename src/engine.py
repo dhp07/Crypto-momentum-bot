@@ -78,10 +78,17 @@ class TradingEngine:
         self._breakout_lookback = config.strategy.breakout_lookback_bars
         self._volume_lookback = config.strategy.volume_lookback_bars
         self._atr_lookback = config.exits.atr_lookback_bars
+        self._ema_short_period = config.strategy.ema_short_period
+        self._ema_long_period = config.strategy.ema_long_period
 
-        # Keep enough history for the largest window, plus cushion
+        # Keep enough history for the largest window, plus cushion. The long EMA
+        # is now included: it needs many bars to stabilize, and is typically the
+        # largest window in the set.
         self._buffer_len = max(
-            self._breakout_lookback, self._volume_lookback, self._atr_lookback
+            self._breakout_lookback,
+            self._volume_lookback,
+            self._atr_lookback,
+            self._ema_long_period,
         ) + 60
         self._buffers: dict[str, deque[dict]] = {}
 
@@ -93,6 +100,7 @@ class TradingEngine:
         logger.info(
             f"TradingEngine ready: breakout_lookback={self._breakout_lookback}, "
             f"volume_lookback={self._volume_lookback}, atr_lookback={self._atr_lookback}, "
+            f"ema_short={self._ema_short_period}, ema_long={self._ema_long_period}, "
             f"buffer_len={self._buffer_len}"
         )
 
@@ -139,6 +147,7 @@ class TradingEngine:
             self._realized_at_day_start = self._executor.realized_pnl
             self._consecutive_losses = 0
             logger.debug(f"Day rolled to {bar_day}; P&L baseline + loss counter reset")
+
     # --------------------------------------------------------
     # The loop body
     # --------------------------------------------------------
@@ -187,6 +196,8 @@ class TradingEngine:
             breakout_lookback=self._breakout_lookback,
             volume_lookback=self._volume_lookback,
             atr_lookback=self._atr_lookback,
+            ema_short_period=self._ema_short_period,
+            ema_long_period=self._ema_long_period,
         )
         signal = self._strategy.evaluate(pair, features, position_open=False)
         if signal is None:
@@ -281,31 +292,45 @@ if __name__ == "__main__":
         gate = RiskGate(RiskParams.from_config(config))
         return TradingEngine(config, strat, gate, ex), ex
 
-    # 40 flat warmup bars: close 100, tiny range, normal volume -> no signal
-    warmup = [bar(i, 100, 100.5, 99.5, 100, 1000) for i in range(40)]
+    # Warmup bars must establish an UPTREND so the EMA trend filter allows entry.
+    # We need at least ema_long_period bars for the long EMA to stabilize, drifting
+    # gently upward so ema_short ends up above ema_long. (Flat warmup would leave
+    # the EMAs equal and the trend filter would correctly block the entry.)
+    n_warmup = max(config.strategy.ema_long_period, 40) + 20
+    warmup = [
+        bar(i, 100 + i * 0.05, 100.5 + i * 0.05, 99.5 + i * 0.05, 100 + i * 0.05, 1000)
+        for i in range(n_warmup)
+    ]
+    breakout_idx = n_warmup  # the bar index right after warmup
 
     # --- Scenario A: winning trade (entry, trail up, profitable exit) ---
     print("Scenario A: breakout entry -> trail up -> profitable exit")
     engine, ex = fresh_engine()
     for b in warmup:
         r = engine.on_bar("BTC-USD", b)
-    expect("no entry during flat warmup", "BTC-USD" not in ex.positions)
+    expect("no entry during uptrend warmup (no breakout yet)", "BTC-USD" not in ex.positions)
 
-    # Breakout bar: close 105 > rolling high (100.5), volume 5000 >= 2x avg(1000)
-    r = engine.on_bar("BTC-USD", bar(40, 100, 105, 100, 105, 5000))
+    # Breakout bar: close well above the recent rolling high, on 5x volume, while
+    # the EMA trend is up. Use a clear jump so it exceeds the drifted rolling high.
+    base = 100 + (n_warmup - 1) * 0.05
+    r = engine.on_bar("BTC-USD", bar(breakout_idx, base, base + 10, base, base + 10, 6000))
     expect("entry opened on breakout bar", r.action == "opened")
     expect("position exists", "BTC-USD" in ex.positions)
 
     # Rising bars with shallow pullbacks -> trail ratchets up, no exit
-    r = engine.on_bar("BTC-USD", bar(41, 105, 110, 109.5, 109, 1500))
-    expect("held while rising (bar 41)", r.action == "held")
-    r = engine.on_bar("BTC-USD", bar(42, 109, 115, 114.5, 114, 1500))
-    expect("held while rising (bar 42)", r.action == "held")
-    r = engine.on_bar("BTC-USD", bar(43, 114, 118, 117.5, 117, 1500))
-    expect("held while rising (bar 43)", r.action == "held")
+    p = base + 10
+    r = engine.on_bar("BTC-USD", bar(breakout_idx + 1, p, p + 5, p + 4.5, p + 4, 1500))
+    expect("held while rising (bar +1)", r.action == "held")
+    p += 4
+    r = engine.on_bar("BTC-USD", bar(breakout_idx + 2, p, p + 5, p + 4.5, p + 4, 1500))
+    expect("held while rising (bar +2)", r.action == "held")
+    p += 4
+    r = engine.on_bar("BTC-USD", bar(breakout_idx + 3, p, p + 5, p + 4.5, p + 4, 1500))
+    expect("held while rising (bar +3)", r.action == "held")
 
-    # Reversal bar: low 100 drops well below the trailed stop -> exit in profit
-    r = engine.on_bar("BTC-USD", bar(44, 117, 117, 100, 101, 1500))
+    # Reversal bar: low drops well below the trailed stop -> exit in profit
+    p += 4
+    r = engine.on_bar("BTC-USD", bar(breakout_idx + 4, p, p, base, base + 1, 1500))
     expect("exited on reversal", r.action == "closed")
     expect("trade was profitable (P&L > 0)", r.pnl is not None and r.pnl > 0)
     expect("position cleared", "BTC-USD" not in ex.positions)
@@ -318,10 +343,12 @@ if __name__ == "__main__":
     engine, ex = fresh_engine()
     for b in warmup:
         engine.on_bar("ETH-USD", b)
-    r = engine.on_bar("ETH-USD", bar(40, 100, 105, 100, 105, 5000))
+    base = 100 + (n_warmup - 1) * 0.05
+    r = engine.on_bar("ETH-USD", bar(breakout_idx, base, base + 10, base, base + 10, 6000))
     expect("entry opened", r.action == "opened")
     # Next bar collapses below the initial stop -> stop-out at a loss
-    r = engine.on_bar("ETH-USD", bar(41, 105, 105, 95, 96, 1500))
+    p = base + 10
+    r = engine.on_bar("ETH-USD", bar(breakout_idx + 1, p, p, base - 5, base - 4, 1500))
     expect("exited on stop", r.action == "closed")
     expect("trade was a loss (P&L < 0)", r.pnl is not None and r.pnl < 0)
     expect("consecutive_losses incremented to 1", engine._consecutive_losses == 1)

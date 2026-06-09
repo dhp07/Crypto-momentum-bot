@@ -11,6 +11,21 @@ Bars are fed in TRUE GLOBAL chronological order across all pairs (not pair by
 pair), because there is one shared account and the risk gate's concurrent-position
 and shared-equity logic only behaves correctly in real time order.
 
+TIMEFRAME / RESAMPLING:
+Data is collected and stored at 1-minute resolution (the raw source of truth).
+The backtester resamples those 1-minute bars up to the interval configured in
+strategy_params.yaml (bar_interval_seconds) before feeding the engine. So setting
+bar_interval_seconds: 900 backtests on 15-minute bars built from the stored
+1-minute data — no re-collection needed, and every timeframe is tested on the
+exact same underlying price history (a clean comparison).
+
+Resampling aggregation per N-minute bucket:
+    open   = first open in the bucket
+    high   = max high
+    low    = min low
+    close  = last close
+    volume = sum of volume
+
 IMPORTANT framing: a single backtest over one window is an IN-SAMPLE first look.
 It tells us whether the strategy has a pulse on real data after fees — NOT whether
 the parameters are optimal. Rigorous out-of-sample evaluation (holding out data
@@ -18,7 +33,7 @@ the optimizer never sees) comes with parameter sweeps, built next.
 
 Usage (on the server, after collect_data has stored bars):
     python3 -m backtest.backtest --days 30 --cash 1000
-    python3 -m backtest.backtest --selftest      # verify metrics math only
+    python3 -m backtest.backtest --selftest      # verify metrics + resample math
 """
 
 from __future__ import annotations
@@ -39,6 +54,50 @@ from src.strategy.breakout import VolumeBreakoutStrategy
 
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# Resampling — aggregate 1-minute bars to the configured interval
+# ============================================================
+
+
+def resample_bars(df: pl.DataFrame, interval_seconds: int) -> pl.DataFrame:
+    """
+    Aggregate 1-minute OHLCV bars up to `interval_seconds`-sized bars.
+
+    The stored data is 1-minute resolution. To backtest on, say, 15-minute bars
+    (interval_seconds=900), we group consecutive 1-minute bars into 15-minute
+    buckets aligned to the clock and aggregate each bucket into one bar.
+
+    If interval_seconds <= 60, the data is already at (or finer than) the target
+    and is returned unchanged — so the 1-minute case is a no-op.
+
+    Assumes df has columns: timestamp, open, high, low, close, volume, sorted by
+    timestamp. Returns the same schema at the coarser interval.
+    """
+    if interval_seconds <= 60:
+        return df
+    if len(df) == 0:
+        return df
+
+    # Polars truncates each timestamp down to the start of its interval bucket,
+    # then we group by that bucket and aggregate. `every` accepts a duration
+    # string; we build it from the interval in seconds.
+    every = f"{interval_seconds}s"
+
+    resampled = (
+        df.sort("timestamp")
+        .group_by_dynamic("timestamp", every=every, closed="left")
+        .agg(
+            pl.col("open").first().alias("open"),
+            pl.col("high").max().alias("high"),
+            pl.col("low").min().alias("low"),
+            pl.col("close").last().alias("close"),
+            pl.col("volume").sum().alias("volume"),
+        )
+        .sort("timestamp")
+    )
+    return resampled
 
 
 # ============================================================
@@ -106,14 +165,17 @@ def compute_metrics(
     }
 
 
-def print_report(metrics: dict, benchmark_pct: Decimal | None) -> None:
+def print_report(metrics: dict, benchmark_pct: Decimal | None, interval_seconds: int) -> None:
     m = metrics
     pf = m["profit_factor"]
     pf_str = "inf" if pf == Decimal("inf") else f"{float(pf):.2f}"
+    interval_label = (
+        f"{interval_seconds // 60}-min" if interval_seconds >= 60 else f"{interval_seconds}s"
+    )
 
     print()
     print("=" * 56)
-    print("  BACKTEST RESULTS  (in-sample first look — not optimized)")
+    print(f"  BACKTEST RESULTS  ({interval_label} bars — in-sample, not optimized)")
     print("=" * 56)
     print(f"  Starting capital      ${float(m['starting_cash']):>12,.2f}")
     print(f"  Final equity          ${float(m['final_equity']):>12,.2f}")
@@ -145,16 +207,27 @@ def run_backtest(days: int, starting_cash: Decimal) -> None:
     config, _env = load_config()
     pairs = config.universe.pairs
     storage = BarStorage()
+    interval_seconds = config.strategy.bar_interval_seconds
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
 
-    # Load each pair's bars, tag with the pair, merge into one chronological stream.
+    interval_label = f"{interval_seconds // 60}-min" if interval_seconds >= 60 else f"{interval_seconds}s"
+    print(f"Backtesting on {interval_label} bars (bar_interval_seconds={interval_seconds}).")
+    if interval_seconds > 60:
+        print("Stored 1-minute bars will be resampled up to this interval before replay.")
+    print()
+
+    # Load each pair's bars, resample to the configured interval, tag with the
+    # pair, then merge into one chronological stream.
     frames = []
     for pair in pairs:
         df = storage.load_bars(pair, start, end)
         if len(df) == 0:
             logger.warning(f"No stored data for {pair}. Run collect_data first.")
+            continue
+        df = resample_bars(df, interval_seconds)
+        if len(df) == 0:
             continue
         frames.append(df.with_columns(pl.lit(pair).alias("pair")))
 
@@ -165,7 +238,7 @@ def run_backtest(days: int, starting_cash: Decimal) -> None:
     merged = pl.concat(frames, how="vertical_relaxed").sort("timestamp")
     print(f"Replaying {len(merged)} bars across {len(frames)} pairs "
           f"({merged['timestamp'].min()} .. {merged['timestamp'].max()})")
-    print("This churns through every bar and may take a few minutes; progress prints.")
+    print("This churns through every bar and may take a moment; progress prints.")
     print()
 
     # Build the engine with a paper executor seeded at starting_cash
@@ -202,20 +275,23 @@ def run_backtest(days: int, starting_cash: Decimal) -> None:
 
     total_fees = sum((f.fee for f in executor.fills), Decimal("0"))
 
-    # Buy-and-hold BTC benchmark over the same window
+    # Buy-and-hold BTC benchmark over the same window (resampled too, though for a
+    # first-vs-last close the interval doesn't matter — included for consistency)
     benchmark_pct: Decimal | None = None
     btc = storage.load_bars("BTC-USD", start, end)
+    if len(btc) > 0:
+        btc = resample_bars(btc, interval_seconds)
     if len(btc) >= 2:
         first_close = Decimal(str(btc["close"][0]))
         last_close = Decimal(str(btc["close"][-1]))
         benchmark_pct = (last_close - first_close) / first_close * Decimal("100")
 
     metrics = compute_metrics(equity_curve, trade_pnls, total_fees, starting_cash)
-    print_report(metrics, benchmark_pct)
+    print_report(metrics, benchmark_pct, interval_seconds)
 
 
 # ============================================================
-# Metrics self-test (deterministic, no data needed)
+# Self-test (deterministic, no stored data needed)
 # ============================================================
 
 
@@ -252,6 +328,39 @@ def _selftest() -> int:
     expect("no trades -> 0% return", m2["total_return_pct"] == Decimal("0"))
     expect("no trades -> profit_factor 0", m2["profit_factor"] == Decimal("0"))
 
+    print()
+    print("Resample self-test (1-min -> 15-min aggregation)...")
+    # Build 30 one-minute bars, two clean 15-minute buckets.
+    # Bucket 1 (minutes 0-14): opens 100.., highs rise to 114.5, lows down to 99,
+    #   closes ..., volume 100 each -> sum 1500.
+    # We assert OHLCV aggregation is correct on the first bucket.
+    t0 = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    rows = []
+    for i in range(30):
+        rows.append({
+            "timestamp": t0 + timedelta(minutes=i),
+            "open": 100.0 + i,
+            "high": 100.0 + i + 0.5,
+            "low": 100.0 + i - 0.5,
+            "close": 100.0 + i + 0.25,
+            "volume": 100.0,
+        })
+    df = pl.DataFrame(rows)
+    rs = resample_bars(df, 900)  # 15 minutes
+    expect("two 15-min buckets from 30 1-min bars", len(rs) == 2)
+    b0 = rs.row(0, named=True)
+    # Bucket 0 covers minutes 0..14
+    expect("bucket0 open == first open (100.0)", abs(b0["open"] - 100.0) < 1e-9)
+    expect("bucket0 high == max high (114.5)", abs(b0["high"] - 114.5) < 1e-9)
+    expect("bucket0 low == min low (99.5)", abs(b0["low"] - 99.5) < 1e-9)
+    expect("bucket0 close == last close (114.25)", abs(b0["close"] - 114.25) < 1e-9)
+    expect("bucket0 volume == sum (1500.0)", abs(b0["volume"] - 1500.0) < 1e-9)
+
+    # interval <= 60 is a no-op
+    rs_noop = resample_bars(df, 60)
+    expect("interval 60 is a no-op (unchanged length)", len(rs_noop) == len(df))
+
+    print()
     print("✗ Some tests failed." if failed else "All tests passed. ✓")
     return 1 if failed else 0
 
@@ -262,7 +371,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Backtest the strategy on stored data")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--cash", type=float, default=1000.0)
-    parser.add_argument("--selftest", action="store_true", help="Verify metrics math only")
+    parser.add_argument("--selftest", action="store_true", help="Verify metrics + resample math only")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
